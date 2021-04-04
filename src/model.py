@@ -26,7 +26,7 @@ def onehot(y):
 class HME:
     def __init__(self, n_feature, n_expert1, n_expert2, n_level,
                  batch_size=32, lr=1., algo='gd', l1_coef=0.001,
-                 l2_coef=0.001):
+                 l21_coef=0.001):
         assert algo in ['fista', 'gd'], f'Invalid algorihm: {algo}.'
 
         self.n_feature = n_feature
@@ -37,7 +37,7 @@ class HME:
         self.algo = algo
         self.batch_size = batch_size
         self.l1_coef = l1_coef
-        self.l21_coef = l2_coef
+        self.l21_coef = l21_coef
 
         self.data = None
         self.loc = 0
@@ -344,12 +344,12 @@ class HME:
 
         return tmp_params
 
-    def fit(self, x, y, max_iter=100, silent=False, stop_thre=np.inf):
+    def fit(self, x, y, max_iter=100, stop_thre=np.inf,
+            log_interval=500, silent=False):
         self.set_data(x, y)
         self.init_param()
         prev_accu = - np.inf
         stop = 0
-        log_interval = 500
 
         self.theta = 1.
 
