@@ -1,3 +1,6 @@
 numpy
 matplotlib
-
+jupyterlab
+pandas
+scikit-learn
+nltk

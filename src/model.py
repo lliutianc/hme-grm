@@ -25,8 +25,8 @@ def onehot(y):
 
 class HME:
     def __init__(self, n_feature, n_expert1, n_expert2, n_level,
-                 batch_size=32, lr=1., algo='gd', l1_coef=0.001,
-                 l21_coef=0.001):
+                 batch_size=32, lr=1., algo='gd', reduce_lr=True,
+                 l1_coef=0.001, l21_coef=0.001):
         assert algo in ['fista', 'gd'], f'Invalid algorihm: {algo}.'
 
         self.n_feature = n_feature
@@ -34,6 +34,7 @@ class HME:
         self.n_expert2 = n_expert2
         self.n_level = n_level
         self.lr = lr
+        self.reduce_lr = reduce_lr
         self.algo = algo
         self.batch_size = batch_size
         self.l1_coef = l1_coef
@@ -51,25 +52,28 @@ class HME:
         self.state = None
         self.grads = None
         if self.algo == 'fista':
-            self.theta = 1.    # For FISTA algorithm
+            self.theta_old = 1.
+            self.theta = 1.
             self.params_wo_momentum = self.params
 
     def init_gate1(self):
-        # todo: should we add intercept in logistic regression?
-        self.params['gamma1'] = np.random.normal(
-            size=(self.n_expert1, self.n_feature, 1)) * .1
+        self.params['gamma1'] = np.random.uniform(low=-1, high=1,
+            size=(self.n_expert1, self.n_feature, 1)) / np.sqrt(self.n_feature)
 
     def init_gate2(self):
-        self.params['gamma2'] = np.random.normal(
-            size=(self.n_expert2, self.n_expert1, self.n_feature, 1)) * .1
+        self.params['gamma2'] = np.random.uniform(low=-1, high=1,
+            size=(self.n_expert2, self.n_expert1, self.n_feature, 1)) / np.sqrt(
+            self.n_feature)
 
     def init_expert(self):
         # expert result: [>=K, >= K-1, ..., >= 1]
-        self.params['expert_w'] = np.random.normal(
-            size=(self.n_expert2, self.n_expert1, self.n_feature, 1)) * .1
+        self.params['expert_w'] = np.random.uniform(low=-1, high=1,
+            size=(self.n_expert2, self.n_expert1, self.n_feature, 1)) / np.sqrt(
+            self.n_feature)
 
         expert_b = np.random.uniform(
-            size=(self.n_expert2, self.n_expert1, 1, self.n_level)) * .1
+            size=(self.n_expert2, self.n_expert1, 1, self.n_level)) / \
+                   np.sqrt(self.n_feature)
         expert_b = np.cumsum(expert_b, axis=-1)
         expert_b[..., -1] = 0.
         self.params['expert_b'] = expert_b
@@ -78,7 +82,11 @@ class HME:
         assert x.shape[1] == self.n_feature, 'Invalid feature number.'
         assert x.shape[0] == y.shape[0], 'Inconsistent sample number.'
         assert len(np.unique(y)) == self.n_level, 'Invalid level number.'
-        self.data = { 'x': x, 'y': y.squeeze().astype(np.int) }
+
+        if y.min() == 1:
+            y = y - 1
+
+        self.data = { 'x': x, 'y': y.squeeze().astype(np.int32)}
 
     def get_batch(self):
 
@@ -110,7 +118,7 @@ class HME:
 
         cum_score = x @ params['expert_w'] + params['expert_b']
         cum_prob = sigmoid(cum_score)
-        # cum_prob: [p(>=K+1), p(>= K-1), ..., p(>= 1)]
+        # cum_prob: [p(>=K+1), p(>= K-1), ..., p(>=1)]
         cum_prob = np.c_[np.zeros(cum_prob.shape[:-1] + (1,)), cum_prob]
         cum_prob[..., -1] = 1.
         # lvl_prob: [p(=k), p(=k-1), ..., p(k=1)]
@@ -143,7 +151,7 @@ class HME:
             factor_dg_i = state['lvl_prob'][i].sum((0), keepdims=1)
             dg_i = dg_i * factor_dg_i
             dg_ls = np.zeros_like(dg_i)
-            for l in range(self.n_expert2):
+            for l in range(self.n_expert1):
                 if l != i:
                     dg_l = g_i * state['g1'][l] * x
                     dg_l = dg_l.T[..., np.newaxis]
@@ -214,12 +222,9 @@ class HME:
                 _db_ij_ = sig_ij * (1 - sig_ij)
                 # The first column is the (K+1)
                 db_ij_k = _db_ij_[..., 1:]
-
                 db_ij_kn = -_db_ij_[..., :-1]
                 db_ij = np.array([db_ij_kn, db_ij_k])
-
                 factor_db_ij = g_i * g_ij
-
                 grad_bij_ = (db_ij * factor_db_ij)[..., ::-1]
                 grad_bij_val = grad_bij_[..., np.arange(y.size), y].T
                 grad_bij = np.zeros(shape=(y.size, self.n_level + 1))
@@ -276,13 +281,15 @@ class HME:
             return self._update_fista(grads, params, state, x, y)
         if self.algo == 'gd':
             return self._update_gd(grads, params, state, x, y)
-        # self.lr *= 0.999
+
+        if self.reduce_lr:
+            self.lr *= 0.999
 
     def _update_fista(self, grads, params, state, x, y):
         lr = self.lr
         l1_lambda = self.l1_coef
         l21_lambda = self.l21_coef
-
+        theta = (1 + np.sqrt(1 + 4 * self.theta ** 2)) / 2
         _, f_old = self.loss(self.params_wo_momentum, x, y)
 
         tmp_params_wo_momentum = {}
@@ -297,7 +304,8 @@ class HME:
             if param_name != 'expert_b':
                 summand = np.arange(len(new_param.shape))
                 feat_coef_normsq += (new_param ** 2).sum(tuple(summand[:-2]))
-        feat_glasso_coef = l21_lambda * lr / np.sqrt(feat_coef_normsq)
+        feat_glasso_coef = l21_lambda * lr / np.sqrt(feat_coef_normsq + 1e-10)
+        feat_glasso_coef[feat_coef_normsq == 0.] = 0.
         feat_glasso_coef = np.clip(1 - feat_glasso_coef, a_min=0., a_max=None)
 
         tmp_params = {}
@@ -306,17 +314,18 @@ class HME:
                 param = param * feat_glasso_coef
                 tmp_params_wo_momentum[param_name] = param
             param_wo_momentum = self.params_wo_momentum[param_name]
-            momentum = (self.theta - 1) / (self.theta + 1) * \
-                       (param - param_wo_momentum)
+            # momentum = self.theta_old / theta * (param - param_wo_momentum)
+            momentum = (self.theta - 1) / theta * (param - param_wo_momentum)
+            # momentum = (self.theta - 1) / (self.theta + 1) * (param - param_wo_momentum)
             tmp_params[param_name] = param + momentum
 
         _, f_new = self.loss(tmp_params_wo_momentum, x, y)
         if f_new < f_old:
             self.params_wo_momentum = tmp_params_wo_momentum
-            self.theta = (1 + np.sqrt(1 + 4 * self.theta ** 2)) / 2
+            self.theta_old, self.theta = self.theta, theta
         else:
             self.params_wo_momentum = tmp_params
-            self.theta = 1.
+            self.theta_old, self.theta = 1., 1.
 
         return tmp_params
 
@@ -336,7 +345,8 @@ class HME:
                 summand = np.arange(len(new_param.shape))
                 feat_coef_normsq += (new_param ** 2).sum(tuple(summand[:-2]))
 
-        feat_glasso_coef = l21_lambda * lr / np.sqrt(feat_coef_normsq)
+        feat_glasso_coef = l21_lambda * lr / np.sqrt(feat_coef_normsq + 1e-10)
+        feat_glasso_coef[feat_coef_normsq == 0.] = 0.
         feat_glasso_coef = np.clip(1 - feat_glasso_coef, a_min=0., a_max=None)
         for param_name, param in tmp_params.items():
             if param_name != 'expert_b':
@@ -347,11 +357,9 @@ class HME:
     def fit(self, x, y, max_iter=100, stop_thre=np.inf,
             log_interval=500, silent=False):
         self.set_data(x, y)
-        self.init_param()
+        # self.init_param()
         prev_accu = - np.inf
         stop = 0
-
-        self.theta = 1.
 
         params = self.params
         for i in range(1, max_iter + 1):
@@ -362,7 +370,7 @@ class HME:
 
             if i % log_interval == 0:
                 y_pred = self.predict(params, x)
-                accu = (y_pred == y).mean()
+                accu = np.mean(y_pred == y)
                 l1loss, llk_loss = self.loss(params=params)
                 if accu > prev_accu:
                     prev_accu = accu
@@ -370,10 +378,51 @@ class HME:
                 else:
                     stop += 1
                 if not silent:
-                    print(f'[accu: {accu}], [loss: {l1loss}, [{llk_loss}]')
+                    print(f'[accu: {accu}]')
 
                 if stop > stop_thre:
                     print(f'stop increasing accuracy at iter: {i}')
                     break
 
         self.params = params
+
+
+if __name__ == '__main__':
+    from data import create_data
+    import matplotlib.pyplot as plt
+
+    n_feature = 2
+    n_sample = 2000
+    n_level = 3
+    x, y = create_data(n_sample, n_feature, n_level)
+
+    n_expert1 = 4
+    n_expert2 = 4
+    max_iter = 30000
+    stop_thre = np.inf
+    batch_size = 2000
+
+    l1_coef = 0.001 / batch_size
+    l21_coef = 0.001 / batch_size
+    hme = HME(n_feature, n_expert1, n_expert2, n_level, batch_size=batch_size,
+              reduce_lr=False,
+              lr=1., l1_coef=l1_coef, l21_coef=l21_coef, algo='fista')
+    y_pred_init = hme.predict(x=x)
+    hme.fit(x, y, max_iter=max_iter, stop_thre=stop_thre, log_interval=200)
+
+    if max_iter >= 2000:
+        y_pred = hme.predict(x=x)
+        plt.subplot(1, 2, 1)
+        plt.scatter(x[:, 0], x[:, 1], c=y, label='real')
+        plt.legend()
+
+        plt.subplot(1, 2, 2)
+        plt.scatter(x[:, 0], x[:, 1], c=y_pred, label='fitted')
+        plt.legend()
+
+        plt.show()
+
+    import pickle
+    #
+    # with open('tmp_3class.pkl', 'wb') as file:
+    #     pickle.dump(hme, file)

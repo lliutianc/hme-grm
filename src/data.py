@@ -16,3 +16,5 @@ def create_data(n_sample, n_feature, n_level):
     x_norm = np.linalg.norm(x, axis=1, keepdims=1, ord=1)
     y = to_score(x_norm, n_level)
     return x, y
+
+
