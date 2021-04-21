@@ -314,9 +314,7 @@ class HME:
                 param = param * feat_glasso_coef
                 tmp_params_wo_momentum[param_name] = param
             param_wo_momentum = self.params_wo_momentum[param_name]
-            # momentum = self.theta_old / theta * (param - param_wo_momentum)
-            momentum = (self.theta - 1) / theta * (param - param_wo_momentum)
-            # momentum = (self.theta - 1) / (self.theta + 1) * (param - param_wo_momentum)
+            momentum = self.theta_old / theta * (param - param_wo_momentum)
             tmp_params[param_name] = param + momentum
 
         _, f_new = self.loss(tmp_params_wo_momentum, x, y)
@@ -384,4 +382,4 @@ class HME:
                     print(f'stop increasing accuracy at iter: {i}')
                     break
 
-        self.params = params
+            self.params = params

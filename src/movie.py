@@ -91,24 +91,4 @@ def load_movie(data, data_limit, balanced_limit=False, load_class='both',
     x = np.r_[bows_onehot].astype(np.float)
     y = np.array(y)[..., np.newaxis].astype(np.int)
 
-    return train_test_split(x, y, train_size=int(x.shape[0] * train_ratio))
-
-
-if __name__ == '__main__':
-    from model import HME
-
-    x_train, x_test, y_train, y_test = load_movie('train', data_limit=5000,
-                                                  train_ratio=0.8)
-    n_feature = x_train.shape[1]
-    n_level = 2
-
-    n_expert1 = 1
-    n_expert2 = 1
-    max_iter = 3000
-    stop_thre = np.inf
-
-    hme = HME(n_feature, n_expert1, n_expert2, n_level, batch_size=20, lr=1.,
-              l1_coef=0.0001, l21_coef=0.0001, algo='gd')
-
-    hme.fit(x_train, y_train, max_iter=max_iter, stop_thre=stop_thre,
-            log_interval=max_iter // 10)
+    return train_test_split(x, y, train_size=int(x.shape[0] * train_ratio), random_state=1)
